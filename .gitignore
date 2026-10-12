@@ -1,0 +1,33 @@
+# Build artifacts
+build/
+*.o
+*.out
+*.a
+*.so
+
+# Runtime artifacts
+runtime/*.db
+runtime/*.db-shm
+runtime/*.db-wal
+runtime/*.log
+runtime/logFifo
+
+
+# Executables
+server
+sensor_gateway
+sensor_node
+
+# Debug / crash files
+vgcore.*
+core
+core.*
+
+# Editor / OS files
+.vscode/
+.DS_Store
+
+# Temporary files
+*.tmp
+*.swp
+*~

@@ -1,27 +1,50 @@
 CC := gcc
 
-CFLAGS := -Wall -Wextra -pthread -Iinclude
+CPPFLAGS := -Iinclude
+CFLAGS := -Wall -Wextra -Wpedantic -std=gnu11 -pthread
 DEBUG_FLAGS := -g -O0 -DDEBUG
 
 SRC_DIR := src
 BUILD_DIR := build
+OBJ_DIR := $(BUILD_DIR)/obj
 BIN_DIR := $(BUILD_DIR)/bin
 
-TARGET := $(BIN_DIR)/sensor_gateway
+TARGET := $(BIN_DIR)/server
 
-.PHONY: all debug run clean
+# Current source files + protocol adapters added later
+SRCS := $(wildcard $(SRC_DIR)/*.c) \
+        $(wildcard $(SRC_DIR)/protocols/*.c)
+
+# src/main.c -> build/obj/main.o
+# src/protocols/tbp.c -> build/obj/protocols/tbp.o
+OBJS := $(patsubst $(SRC_DIR)/%.c,$(OBJ_DIR)/%.o,$(SRCS))
+
+.PHONY: all debug run clean valgrind helgrind
 
 all: $(TARGET)
 
-$(TARGET): $(SRC_DIR)/main.c
-	mkdir -p $(BIN_DIR)
-	$(CC) $(CFLAGS) $< -o $@
+$(TARGET): $(OBJS)
+	@mkdir -p $(BIN_DIR)
+	$(CC) $(CFLAGS) $(OBJS) -o $@
+
+$(OBJ_DIR)/%.o: $(SRC_DIR)/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
 debug: CFLAGS += $(DEBUG_FLAGS)
 debug: clean all
 
 run: all
-	./$(TARGET)
+	./$(TARGET) $(ARGS)
+
+valgrind: debug
+	valgrind --leak-check=full \
+	         --show-leak-kinds=all \
+	         ./$(TARGET) $(ARGS)
+
+helgrind: debug
+	valgrind --tool=helgrind \
+	         ./$(TARGET) $(ARGS)
 
 clean:
 	rm -rf $(BUILD_DIR)

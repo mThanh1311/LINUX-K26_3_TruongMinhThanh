@@ -23,7 +23,22 @@ int gateway_init(
     gateway->http_port = http_port;
     gateway->stop = 0;
 
-    if (pthread_mutex_init(&gateway->stop_mutex, NULL) != 0) {
+    if (pthread_mutex_init(
+            &gateway->stop_mutex,
+            NULL
+        ) != 0) {
+
+        return -1;
+    }
+
+    if (sbuffer_init(
+            &gateway->sbuf
+        ) != 0) {
+
+        pthread_mutex_destroy(
+            &gateway->stop_mutex
+        );
+
         return -1;
     }
 
@@ -116,5 +131,9 @@ void gateway_destroy(gateway_t *gateway)
         return;
     }
 
-    pthread_mutex_destroy(&gateway->stop_mutex);
+    sbuffer_destroy(&gateway->sbuf);
+
+    pthread_mutex_destroy(
+        &gateway->stop_mutex
+    );
 }

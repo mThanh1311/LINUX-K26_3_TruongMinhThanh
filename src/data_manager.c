@@ -1,9 +1,10 @@
 #include <stdio.h>
-#include <unistd.h>
 
 #include "data_manager.h"
 #include "gateway.h"
 #include "logger.h"
+#include "sbuffer.h"
+
 
 void *data_manager_thread(void *arg)
 {
@@ -18,10 +19,25 @@ void *data_manager_thread(void *arg)
         "Data Manager started"
     );
 
+    sensor_data_t data;
 
-    while (!gateway_should_stop(gateway)) {
-        usleep(100000);
+    while (sbuffer_read(
+               &gateway->sbuf,
+               SBUFFER_READER_DATA,
+               &data
+           ) == 0) {
+
+#ifdef DEBUG
+        printf(
+            "[DATA] id=%u type=%d value=%.2f ts=%ld\n",
+            data.id,
+            data.type,
+            data.value,
+            (long)data.ts
+        );
+#endif
     }
+
 
 #ifdef DEBUG
     printf("[DATA] Data Manager stopped\n");

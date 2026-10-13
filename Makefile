@@ -11,6 +11,11 @@ BIN_DIR := $(BUILD_DIR)/bin
 
 TARGET := $(BIN_DIR)/server
 
+TOOLS_DIR := tools
+
+SENSOR_NODE_SRC := $(TOOLS_DIR)/sensor_node.c
+SENSOR_NODE_TARGET := $(BIN_DIR)/sensor_node
+
 # Current source files + protocol adapters added later
 SRCS := $(wildcard $(SRC_DIR)/*.c) \
         $(wildcard $(SRC_DIR)/protocols/*.c)
@@ -21,7 +26,7 @@ OBJS := $(patsubst $(SRC_DIR)/%.c,$(OBJ_DIR)/%.o,$(SRCS))
 
 .PHONY: all debug run clean valgrind helgrind
 
-all: $(TARGET)
+all: $(TARGET) $(SENSOR_NODE_TARGET)
 
 $(TARGET): $(OBJS)
 	@mkdir -p $(BIN_DIR)
@@ -30,6 +35,10 @@ $(TARGET): $(OBJS)
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+$(SENSOR_NODE_TARGET): $(SENSOR_NODE_SRC)
+	mkdir -p $(BIN_DIR)
+	$(CC) $(CFLAGS) $< -o $@
 
 debug: CFLAGS += $(DEBUG_FLAGS)
 debug: clean all

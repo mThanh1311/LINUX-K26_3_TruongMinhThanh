@@ -1,10 +1,10 @@
 #include <stdio.h>
-#include <unistd.h>
-
 
 #include "storage_manager.h"
 #include "gateway.h"
 #include "logger.h"
+#include "sbuffer.h"
+
 
 void *storage_manager_thread(void *arg)
 {
@@ -19,8 +19,23 @@ void *storage_manager_thread(void *arg)
         "Storage Manager started"
     );
 
-    while (!gateway_should_stop(gateway)) {
-        usleep(100000);
+    sensor_data_t data;
+
+    while (sbuffer_read(
+               &gateway->sbuf,
+               SBUFFER_READER_STORAGE,
+               &data
+           ) == 0) {
+
+#ifdef DEBUG
+        printf(
+            "[STOR] id=%u type=%d value=%.2f ts=%ld\n",
+            data.id,
+            data.type,
+            data.value,
+            (long)data.ts
+        );
+#endif
     }
 
 #ifdef DEBUG

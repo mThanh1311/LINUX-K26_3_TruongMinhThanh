@@ -6,6 +6,8 @@
 #include <signal.h>
 #include <stdint.h>
 
+#include "sbuffer.h"
+
 typedef struct {
     uint16_t base_port;
     uint16_t http_port;
@@ -19,7 +21,10 @@ typedef struct {
     pthread_t storage_thread;
 
     pid_t log_pid;
+
+    sbuffer_t sbuf;
 } gateway_t;
+
 
 int gateway_init(
     gateway_t *gateway,

@@ -31,3 +31,6 @@ core.*
 *.tmp
 *.swp
 *~
+
+/gateway.log
+/logFifo

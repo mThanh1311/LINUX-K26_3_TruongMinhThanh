@@ -1,6 +1,7 @@
 #ifndef GATEWAY_H
 #define GATEWAY_H
 
+#include <sys/types.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdint.h>
@@ -16,6 +17,8 @@ typedef struct {
     pthread_t conn_thread;
     pthread_t data_thread;
     pthread_t storage_thread;
+
+    pid_t log_pid;
 } gateway_t;
 
 int gateway_init(

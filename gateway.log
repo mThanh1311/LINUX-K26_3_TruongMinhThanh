@@ -1,0 +1,5 @@
+1 2026-10-13 14:06:16 CONN Connection Manager started
+2 2026-10-13 14:06:16 DATA Data Manager started
+3 2026-10-13 14:06:16 STOR Storage Manager started
+4 2026-10-13 14:06:16 MAIN Gateway started (TCP base port 1234, HTTP port 8080)
+5 2026-10-13 14:14:31 MAIN Gateway shutting down (signal)

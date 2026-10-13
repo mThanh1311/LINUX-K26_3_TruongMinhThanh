@@ -8,6 +8,7 @@
 #include <unistd.h>
 
 #include "gateway.h"
+#include "logger.h"
 
 
 static volatile sig_atomic_t g_signal_received = 0;
@@ -116,6 +117,18 @@ int main(int argc, char *argv[])
         return EXIT_FAILURE;
     }
 
+    if (logger_start(&gateway.log_pid) != 0) {
+
+        fprintf(
+            stderr,
+            "Failed to start logger\n"
+        );
+
+        gateway_destroy(&gateway);
+
+        return EXIT_FAILURE;
+    }
+
     if (gateway_start(&gateway) != 0) {
         fprintf(stderr, "Failed to start gateway\n");
 
@@ -123,6 +136,13 @@ int main(int argc, char *argv[])
 
         return EXIT_FAILURE;
     }
+
+    logger_write(
+        LOG_MAIN,
+        "Gateway started (TCP base port %u, HTTP port %u)",
+        gateway.base_port,
+        gateway.http_port
+    );
 
     if (pthread_sigmask(
             SIG_UNBLOCK,
@@ -157,9 +177,18 @@ int main(int argc, char *argv[])
     printf("[MAIN] Shutdown requested\n");
 #endif
 
+    logger_write(
+        LOG_MAIN,
+        "Gateway shutting down (signal)"
+    );
+
     gateway_request_stop(&gateway);
 
     gateway_join(&gateway);
+
+    if (logger_shutdown(gateway.log_pid) != 0) {
+    fprintf(stderr, "Failed to shutdown logger cleanly\n");
+}
 
     gateway_destroy(&gateway);
 

@@ -1,8 +1,10 @@
-#include "storage_manager.h"
-#include "gateway.h"
-
 #include <stdio.h>
 #include <unistd.h>
+
+
+#include "storage_manager.h"
+#include "gateway.h"
+#include "logger.h"
 
 void *storage_manager_thread(void *arg)
 {
@@ -11,6 +13,11 @@ void *storage_manager_thread(void *arg)
 #ifdef DEBUG
     printf("[STOR] Storage Manager started\n");
 #endif
+
+    logger_write(
+        LOG_STOR,
+        "Storage Manager started"
+    );
 
     while (!gateway_should_stop(gateway)) {
         usleep(100000);

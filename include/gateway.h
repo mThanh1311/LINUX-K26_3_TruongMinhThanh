@@ -1,12 +1,14 @@
 #ifndef GATEWAY_H
 #define GATEWAY_H
 
-#include <sys/types.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdint.h>
+#include <sys/types.h>
 
+#include "connection_manager.h"
 #include "sbuffer.h"
+
 
 typedef struct {
     uint16_t base_port;
@@ -23,6 +25,13 @@ typedef struct {
     pid_t log_pid;
 
     sbuffer_t sbuf;
+
+    /*
+     * Step 4:
+     * Connection Manager state.
+     */
+    connmgr_t conn;
+
 } gateway_t;
 
 
@@ -32,14 +41,25 @@ int gateway_init(
     uint16_t http_port
 );
 
-int gateway_start(gateway_t *gateway);
+int gateway_start(
+    gateway_t *gateway
+);
 
-int gateway_should_stop(gateway_t *gateway);
+int gateway_should_stop(
+    gateway_t *gateway
+);
 
-void gateway_request_stop(gateway_t *gateway);
+void gateway_request_stop(
+    gateway_t *gateway
+);
 
-void gateway_join(gateway_t *gateway);
+void gateway_join(
+    gateway_t *gateway
+);
 
-void gateway_destroy(gateway_t *gateway);
+void gateway_destroy(
+    gateway_t *gateway
+);
+
 
 #endif

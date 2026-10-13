@@ -6,131 +6,33 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/socket.h>
-#include <time.h>
 #include <unistd.h>
 
 #include "connection_manager.h"
 #include "gateway.h"
 #include "logger.h"
+#include "protocols.h"
 #include "sbuffer.h"
 
 
-#define TBP_FRAME_SIZE 18U
+#define POLL_FD_COUNT \
+    (PROTOCOL_COUNT + MAX_CONN)
 
 
-/*
- * TBP:
- *
- * byte 0..1   : uint16_t sensor id, little-endian
- * byte 2..9   : IEEE-754 double, little-endian
- * byte 10..17 : int64_t timestamp, little-endian
- */
-_Static_assert(
-    sizeof(double) == 8,
-    "TBP requires an 8-byte double"
-);
+/* ============================================================
+ * TCP helpers
+ * ============================================================ */
 
-
-/*
- * Read uint16_t from little-endian byte stream.
- */
-static uint16_t read_u16_le(const uint8_t *p)
-{
-    return
-        ((uint16_t)p[0]) |
-        ((uint16_t)p[1] << 8);
-}
-
-
-/*
- * Read uint64_t from little-endian byte stream.
- */
-static uint64_t read_u64_le(const uint8_t *p)
-{
-    return
-        ((uint64_t)p[0])       |
-        ((uint64_t)p[1] << 8)  |
-        ((uint64_t)p[2] << 16) |
-        ((uint64_t)p[3] << 24) |
-        ((uint64_t)p[4] << 32) |
-        ((uint64_t)p[5] << 40) |
-        ((uint64_t)p[6] << 48) |
-        ((uint64_t)p[7] << 56);
-}
-
-
-/*
- * Decode one complete 18-byte TBP frame.
- */
-static int decode_tbp_frame(
-    const uint8_t *frame,
-    sensor_data_t *data
+static int create_listen_socket(
+    uint16_t port
 )
-{
-    if (frame == NULL ||
-        data == NULL) {
-
-        return -1;
-    }
-
-
-    /*
-     * Sensor ID.
-     */
-    data->id =
-        read_u16_le(
-            frame
-        );
-
-
-    /*
-     * Temperature value.
-     */
-    uint64_t value_bits =
-        read_u64_le(
-            frame + 2
-        );
-
-    memcpy(
-        &data->value,
-        &value_bits,
-        sizeof(data->value)
-    );
-
-
-    /*
-     * Timestamp.
-     */
-    uint64_t ts_bits =
-        read_u64_le(
-            frame + 10
-        );
-
-    int64_t timestamp =
-        (int64_t)ts_bits;
-
-
-    data->type =
-        SENSOR_TEMPERATURE;
-
-    data->ts =
-        (time_t)timestamp;
-
-
-    return 0;
-}
-
-
-/*
- * Create TCP listening socket.
- */
-static int create_listen_socket(uint16_t port)
 {
     int fd = socket(
         AF_INET,
         SOCK_STREAM,
         0
     );
+
 
     if (fd < 0) {
         perror("socket");
@@ -140,28 +42,29 @@ static int create_listen_socket(uint16_t port)
 
     int opt = 1;
 
-    if (setsockopt(
+
+    if (
+        setsockopt(
             fd,
             SOL_SOCKET,
             SO_REUSEADDR,
             &opt,
             sizeof(opt)
-        ) < 0) {
+        ) < 0
+    ) {
 
-        int saved_errno =
-            errno;
-
-        perror("setsockopt");
+        perror(
+            "setsockopt"
+        );
 
         close(fd);
-
-        errno = saved_errno;
 
         return -1;
     }
 
 
     struct sockaddr_in addr;
+
 
     memset(
         &addr,
@@ -180,38 +83,36 @@ static int create_listen_socket(uint16_t port)
         htons(port);
 
 
-    if (bind(
+    if (
+        bind(
             fd,
             (struct sockaddr *)&addr,
             sizeof(addr)
-        ) < 0) {
+        ) < 0
+    ) {
 
-        int saved_errno =
-            errno;
-
-        perror("bind");
+        perror(
+            "bind"
+        );
 
         close(fd);
-
-        errno = saved_errno;
 
         return -1;
     }
 
 
-    if (listen(
+    if (
+        listen(
             fd,
             SOMAXCONN
-        ) < 0) {
+        ) < 0
+    ) {
 
-        int saved_errno =
-            errno;
-
-        perror("listen");
+        perror(
+            "listen"
+        );
 
         close(fd);
-
-        errno = saved_errno;
 
         return -1;
     }
@@ -221,91 +122,427 @@ static int create_listen_socket(uint16_t port)
 }
 
 
-/*
- * Close one sensor connection and reset its slot.
- */
-static void close_connection(
-    connection_t *connection,
-    struct pollfd *pfd
+/* ============================================================
+ * RX buffer helpers
+ * ============================================================ */
+
+static void drop_rx_bytes(
+    connection_t *conn,
+    size_t count
 )
 {
-    if (connection == NULL ||
-        pfd == NULL) {
+    if (
+        conn == NULL ||
+        count == 0
+    ) {
 
         return;
     }
 
 
+    if (count >= conn->rx_len) {
+
+        conn->rx_len = 0;
+
+        return;
+    }
+
+
+    size_t remaining =
+        conn->rx_len -
+        count;
+
+
+    memmove(
+        conn->rx,
+        conn->rx + count,
+        remaining
+    );
+
+
+    conn->rx_len =
+        remaining;
+}
+
+
+/* ============================================================
+ * Reply helper
+ * ============================================================ */
+
+static int send_reply(
+    connection_t *conn,
+    parse_result_t result
+)
+{
+    if (
+        conn == NULL ||
+        conn->adapter == NULL
+    ) {
+
+        return -1;
+    }
+
+
+    uint8_t reply[8];
+
+
+    size_t reply_len =
+        conn->adapter->build_reply(
+            result,
+            reply,
+            sizeof(reply)
+        );
+
+
+    if (reply_len == 0) {
+        return 0;
+    }
+
+
+    size_t sent_total = 0;
+
+
+    while (
+        sent_total <
+        reply_len
+    ) {
+
+        ssize_t sent =
+            send(
+                conn->fd,
+                reply + sent_total,
+                reply_len - sent_total,
+                0
+            );
+
+
+        if (sent < 0) {
+
+            if (errno == EINTR) {
+                continue;
+            }
+
+            return -1;
+        }
+
+
+        if (sent == 0) {
+            return -1;
+        }
+
+
+        sent_total +=
+            (size_t)sent;
+    }
+
+
+    return 0;
+}
+
+
+/* ============================================================
+ * Parse error reason
+ *
+ * Logger's allowed reasons:
+ *
+ * accept error
+ * too many connections
+ * malformed first frame
+ * unknown sensor
+ * bad CRC
+ * bad length
+ * ============================================================ */
+
+static const char *parse_error_reason(
+    const connection_t *conn
+)
+{
+    if (
+        conn == NULL ||
+        conn->adapter == NULL
+    ) {
+
+        return "bad length";
+    }
+
+
     /*
-     * Sensor ID is only known after
-     * the first valid TBP frame.
+     * Detect SGP CRC specifically.
      */
-    if (connection->identified) {
+    if (
+        strcmp(
+            conn->adapter->name,
+            "SGP"
+        ) == 0 &&
+        conn->rx_len >= 11 &&
+        conn->rx[0] == 0x7E
+    ) {
+
+        uint16_t received_crc =
+            ((uint16_t)conn->rx[9] << 8) |
+            ((uint16_t)conn->rx[10]);
+
+
+        uint16_t calculated_crc =
+            sgp_crc16_ccitt_false(
+                conn->rx + 1,
+                8
+            );
+
+
+        if (
+            received_crc !=
+            calculated_crc
+        ) {
+
+            return "bad CRC";
+        }
+    }
+
+
+    if (!conn->identified) {
+
+        return
+            "malformed first frame";
+    }
+
+
+    return
+        "bad length";
+}
+
+
+/* ============================================================
+ * Connection cleanup
+ * ============================================================ */
+
+static void close_connection(
+    connmgr_t *manager,
+    connection_t *conn,
+    struct pollfd *pfd
+)
+{
+    if (
+        manager == NULL ||
+        conn == NULL ||
+        pfd == NULL
+    ) {
+
+        return;
+    }
+
+
+    if (conn->identified) {
 
         logger_write(
             LOG_CONN,
             "The sensor node with %u has closed the connection",
-            connection->sensor_id
+            conn->sensor_id
         );
     }
 
 
-    if (connection->fd != -1) {
+    if (conn->fd != -1) {
 
         close(
-            connection->fd
+            conn->fd
         );
+
+
+        if (manager->n_conns > 0) {
+
+            manager->n_conns--;
+        }
     }
 
 
-    connection->fd = -1;
+    conn->fd =
+        -1;
 
-    connection->rx_len = 0;
+    conn->adapter =
+        NULL;
 
-    connection->identified = false;
+    conn->rx_len =
+        0;
 
-    connection->sensor_id = 0;
+    conn->identified =
+        false;
+
+    conn->sensor_id =
+        0;
+
+    conn->parse_errors =
+        0;
 
 
-    pfd->fd = -1;
+    pfd->fd =
+        -1;
 
-    pfd->events = 0;
+    pfd->events =
+        0;
 
-    pfd->revents = 0;
+    pfd->revents =
+        0;
 }
 
 
-/*
- * Process every complete TBP frame currently
- * available in one connection receive buffer.
- */
-static int process_tbp_frames(
+/* ============================================================
+ * Adapter parse loop
+ * ============================================================ */
+
+static int process_connection_buffer(
     gateway_t *gateway,
     connection_t *conn
 )
 {
-    if (gateway == NULL ||
-        conn == NULL) {
+    if (
+        gateway == NULL ||
+        conn == NULL ||
+        conn->adapter == NULL
+    ) {
 
         return -1;
     }
 
 
     while (
-        conn->rx_len >=
-        TBP_FRAME_SIZE
+        conn->rx_len > 0
     ) {
 
         sensor_data_t data;
 
+        size_t consumed = 0;
+
+
+        parse_result_t result =
+            conn->adapter->parse(
+                conn->rx,
+                conn->rx_len,
+                &data,
+                &consumed
+            );
+
 
         /*
-         * Decode first 18 bytes.
+         * TCP fragment:
+         * keep bytes and wait for recv().
          */
-        if (decode_tbp_frame(
-                conn->rx,
-                &data
-            ) != 0) {
+        if (
+            result ==
+            PARSE_NEED_MORE
+        ) {
+
+            return 0;
+        }
+
+
+        /*
+         * Malformed frame.
+         */
+        if (
+            result ==
+            PARSE_ERROR
+        ) {
+
+            const char *reason =
+                parse_error_reason(
+                    conn
+                );
+
+
+            logger_write(
+                LOG_CONN,
+                "Received malformed frame on %s port (%s)",
+                conn->adapter->name,
+                reason
+            );
+
+
+#ifdef DEBUG
+            printf(
+                "[CONN] %s parse error: %s "
+                "(fd=%d consumed=%zu)\n",
+                conn->adapter->name,
+                reason,
+                conn->fd,
+                consumed
+            );
+#endif
+
+
+            /*
+             * SGP sends NAK here.
+             * Other adapters return reply_len = 0.
+             */
+            if (
+                send_reply(
+                    conn,
+                    PARSE_ERROR
+                ) != 0
+            ) {
+
+                return -1;
+            }
+
+
+            /*
+             * Defensive recovery:
+             * adapter must always consume at least
+             * one byte on PARSE_ERROR.
+             */
+            if (
+                consumed == 0 ||
+                consumed > conn->rx_len
+            ) {
+
+                consumed = 1;
+            }
+
+
+            drop_rx_bytes(
+                conn,
+                consumed
+            );
+
+
+            conn->parse_errors++;
+
+
+            /*
+             * Policy:
+             *
+             * 3 consecutive malformed frames
+             * -> close connection.
+             */
+            if (
+                conn->parse_errors >=
+                MAX_PARSE_ERRORS
+            ) {
+
+#ifdef DEBUG
+                printf(
+                    "[CONN] Closing %s connection "
+                    "after %u parse errors\n",
+                    conn->adapter->name,
+                    conn->parse_errors
+                );
+#endif
+
+                return -1;
+            }
+
+
+            continue;
+        }
+
+
+        /*
+         * PARSE_OK must consume bytes.
+         */
+        if (
+            consumed == 0 ||
+            consumed > conn->rx_len
+        ) {
 
             return -1;
         }
@@ -317,7 +554,8 @@ static int process_tbp_frames(
          */
         if (!conn->identified) {
 
-            conn->identified = true;
+            conn->identified =
+                true;
 
             conn->sensor_id =
                 data.id;
@@ -332,8 +570,9 @@ static int process_tbp_frames(
 
 #ifdef DEBUG
             printf(
-                "[CONN] Sensor identified: "
+                "[CONN] %s sensor identified: "
                 "id=%u (fd=%d)\n",
+                conn->adapter->name,
                 conn->sensor_id,
                 conn->fd
             );
@@ -345,9 +584,16 @@ static int process_tbp_frames(
         ) {
 
             /*
-             * One TCP connection represents
-             * one sensor node.
+             * One TCP connection belongs
+             * to exactly one sensor ID.
              */
+            logger_write(
+                LOG_CONN,
+                "Received malformed frame on %s port (unknown sensor)",
+                conn->adapter->name
+            );
+
+
 #ifdef DEBUG
             printf(
                 "[CONN] Sensor ID mismatch: "
@@ -363,9 +609,11 @@ static int process_tbp_frames(
 
 #ifdef DEBUG
         printf(
-            "[CONN] TBP frame: "
-            "id=%u value=%.2f ts=%ld\n",
+            "[CONN] %s frame: "
+            "id=%u type=%d value=%.2f ts=%ld\n",
+            conn->adapter->name,
             data.id,
+            data.type,
             data.value,
             (long)data.ts
         );
@@ -373,53 +621,60 @@ static int process_tbp_frames(
 
 
         /*
-         * Put normalized sensor data into
-         * the single shared sbuffer.
-         *
-         * Only consume the TCP frame after
-         * the insert succeeds.
+         * Normalize all protocols into the
+         * same shared sensor_data_t pipeline.
          */
-        if (sbuffer_insert(
+        if (
+            sbuffer_insert(
                 &gateway->sbuf,
                 &data
-            ) != 0) {
+            ) != 0
+        ) {
 
-            if (!gateway_should_stop(
+            if (
+                !gateway_should_stop(
                     gateway
-                )) {
+                )
+            ) {
 
                 fprintf(
                     stderr,
-                    "[CONN] Failed to insert sensor data into sbuffer\n"
+                    "[CONN] Failed to insert sensor data\n"
                 );
             }
+
 
             return -1;
         }
 
 
         /*
-         * Remove exactly one consumed
-         * 18-byte frame from rx[].
+         * SGP sends ACK after successful
+         * parsing + insertion.
          */
-        size_t remaining =
-            conn->rx_len -
-            TBP_FRAME_SIZE;
+        if (
+            send_reply(
+                conn,
+                PARSE_OK
+            ) != 0
+        ) {
 
-
-        if (remaining > 0) {
-
-            memmove(
-                conn->rx,
-                conn->rx +
-                    TBP_FRAME_SIZE,
-                remaining
-            );
+            return -1;
         }
 
 
-        conn->rx_len =
-            remaining;
+        drop_rx_bytes(
+            conn,
+            consumed
+        );
+
+
+        /*
+         * Successful frame resets
+         * consecutive-error counter.
+         */
+        conn->parse_errors =
+            0;
     }
 
 
@@ -427,10 +682,20 @@ static int process_tbp_frames(
 }
 
 
-void *connection_manager_thread(void *arg)
+/* ============================================================
+ * Connection Manager thread
+ * ============================================================ */
+
+void *connection_manager_thread(
+    void *arg
+)
 {
     gateway_t *gateway =
         (gateway_t *)arg;
+
+
+    connmgr_t *manager =
+        &gateway->conn;
 
 
 #ifdef DEBUG
@@ -440,118 +705,177 @@ void *connection_manager_thread(void *arg)
 #endif
 
 
-    logger_write(
-        LOG_CONN,
-        "Connection Manager started"
-    );
-
-
     /*
-     * Step 3:
-     * Temperature/TBP only.
+     * Initialize manager.
      */
-    int listen_fd =
-        create_listen_socket(
-            gateway->base_port
-        );
+    manager->n_conns =
+        0;
 
 
-    if (listen_fd < 0) {
-
-        int saved_errno =
-            errno;
-
-        logger_write(
-            LOG_CONN,
-            "Connection attempt failed on TBP port (%s)",
-            strerror(saved_errno)
-        );
-
-        return NULL;
-    }
-
-
-#ifdef DEBUG
-    printf(
-        "[CONN] Listening on TCP port %u\n",
-        gateway->base_port
-    );
-#endif
-
-
-    /*
-     * pfds[0] = listening socket
-     *
-     * pfds[1..MAX_CONN]
-     * = sensor client sockets
-     */
-    struct pollfd pfds[
-        MAX_CONN + 1
-    ];
-
-
-    connection_t connections[
-        MAX_CONN
-    ];
-
-
-    /*
-     * Initialize poll descriptors.
-     */
     for (
         size_t i = 0;
-        i < MAX_CONN + 1;
+        i < PROTOCOL_COUNT;
         i++
     ) {
 
-        pfds[i].fd = -1;
-
-        pfds[i].events = 0;
-
-        pfds[i].revents = 0;
+        manager->listen_fd[i] =
+            -1;
     }
 
 
-    /*
-     * Initialize connection slots.
-     */
     for (
         size_t i = 0;
         i < MAX_CONN;
         i++
     ) {
 
-        connections[i].fd = -1;
+        manager->conns[i].fd =
+            -1;
 
-        connections[i].rx_len = 0;
+        manager->conns[i].adapter =
+            NULL;
 
-        connections[i].identified =
+        manager->conns[i].rx_len =
+            0;
+
+        manager->conns[i].identified =
             false;
 
-        connections[i].sensor_id = 0;
+        manager->conns[i].sensor_id =
+            0;
+
+        manager->conns[i].parse_errors =
+            0;
     }
 
 
     /*
-     * Poll slot 0 is always
-     * the listening socket.
+     * ------------------------------------------------
+     * Open P, P+1, P+2, P+3
+     * ------------------------------------------------
      */
-    pfds[0].fd =
-        listen_fd;
+    for (
+        size_t i = 0;
+        i < PROTOCOL_COUNT;
+        i++
+    ) {
 
-    pfds[0].events =
-        POLLIN;
+        const protocol_adapter_t *adapter =
+            ADAPTERS[i];
 
 
-    while (!gateway_should_stop(
-        gateway
-    )) {
+        uint16_t port =
+            (uint16_t)(
+                gateway->base_port +
+                adapter->port_offset
+            );
 
-        int ret = poll(
-            pfds,
-            MAX_CONN + 1,
-            500
+
+        manager->listen_fd[i] =
+            create_listen_socket(
+                port
+            );
+
+
+        if (
+            manager->listen_fd[i] <
+            0
+        ) {
+
+            logger_write(
+                LOG_CONN,
+                "Connection attempt failed on %s port (accept error)",
+                adapter->name
+            );
+
+
+            for (
+                size_t j = 0;
+                j < i;
+                j++
+            ) {
+
+                close(
+                    manager->listen_fd[j]
+                );
+
+                manager->listen_fd[j] =
+                    -1;
+            }
+
+
+            return NULL;
+        }
+
+
+#ifdef DEBUG
+        printf(
+            "[CONN] %s listening on TCP port %u\n",
+            adapter->name,
+            port
         );
+#endif
+    }
+
+
+    /*
+     * poll slots:
+     *
+     * [0..3]       listening sockets
+     * [4..67]      sensor connections
+     */
+    struct pollfd
+        pfds[POLL_FD_COUNT];
+
+
+    for (
+        size_t i = 0;
+        i < POLL_FD_COUNT;
+        i++
+    ) {
+
+        pfds[i].fd =
+            -1;
+
+        pfds[i].events =
+            0;
+
+        pfds[i].revents =
+            0;
+    }
+
+
+    for (
+        size_t i = 0;
+        i < PROTOCOL_COUNT;
+        i++
+    ) {
+
+        pfds[i].fd =
+            manager->listen_fd[i];
+
+        pfds[i].events =
+            POLLIN;
+    }
+
+
+    /*
+     * ------------------------------------------------
+     * Main poll loop
+     * ------------------------------------------------
+     */
+    while (
+        !gateway_should_stop(
+            gateway
+        )
+    ) {
+
+        int ret =
+            poll(
+                pfds,
+                POLL_FD_COUNT,
+                500
+            );
 
 
         if (ret < 0) {
@@ -560,7 +884,10 @@ void *connection_manager_thread(void *arg)
                 continue;
             }
 
-            perror("poll");
+
+            perror(
+                "poll"
+            );
 
             break;
         }
@@ -572,35 +899,30 @@ void *connection_manager_thread(void *arg)
 
 
         /*
-         * Listening socket failed.
+         * ============================================
+         * Listening sockets
+         * ============================================
          */
-        if (
-            pfds[0].revents &
-            (
-                POLLERR |
-                POLLHUP |
-                POLLNVAL
-            )
+        for (
+            size_t listener = 0;
+            listener < PROTOCOL_COUNT;
+            listener++
         ) {
 
-            fprintf(
-                stderr,
-                "[CONN] Listening socket error\n"
-            );
+            if (
+                !(
+                    pfds[listener].revents &
+                    POLLIN
+                )
+            ) {
 
-            break;
-        }
+                continue;
+            }
 
 
-        /*
-         * =================================================
-         * New incoming connection
-         * =================================================
-         */
-        if (
-            pfds[0].revents &
-            POLLIN
-        ) {
+            const protocol_adapter_t *adapter =
+                ADAPTERS[listener];
+
 
             struct sockaddr_in
                 client_addr;
@@ -610,136 +932,162 @@ void *connection_manager_thread(void *arg)
                 sizeof(client_addr);
 
 
-            int client_fd = accept(
-                listen_fd,
-                (struct sockaddr *)
-                    &client_addr,
-                &client_len
-            );
+            int client_fd =
+                accept(
+                    manager->listen_fd[listener],
+                    (struct sockaddr *)&client_addr,
+                    &client_len
+                );
 
 
             if (client_fd < 0) {
 
                 if (errno != EINTR) {
-                    perror("accept");
+
+                    logger_write(
+                        LOG_CONN,
+                        "Connection attempt failed on %s port (accept error)",
+                        adapter->name
+                    );
                 }
+
+
+                continue;
+            }
+
+
+            /*
+             * Find free connection slot.
+             */
+            size_t slot;
+
+
+            for (
+                slot = 0;
+                slot < MAX_CONN;
+                slot++
+            ) {
+
+                if (
+                    manager->conns[slot].fd ==
+                    -1
+                ) {
+
+                    break;
+                }
+            }
+
+
+            if (
+                slot ==
+                MAX_CONN
+            ) {
+
+                logger_write(
+                    LOG_CONN,
+                    "Connection attempt failed on %s port (too many connections)",
+                    adapter->name
+                );
+
+
+                close(
+                    client_fd
+                );
+
+
+                continue;
+            }
+
+
+            connection_t *conn =
+                &manager->conns[slot];
+
+
+            conn->fd =
+                client_fd;
+
+            conn->adapter =
+                adapter;
+
+            conn->rx_len =
+                0;
+
+            conn->identified =
+                false;
+
+            conn->sensor_id =
+                0;
+
+            conn->parse_errors =
+                0;
+
+
+            size_t poll_index =
+                PROTOCOL_COUNT +
+                slot;
+
+
+            pfds[poll_index].fd =
+                client_fd;
+
+            pfds[poll_index].events =
+                POLLIN;
+
+            pfds[poll_index].revents =
+                0;
+
+
+            manager->n_conns++;
+
+
+#ifdef DEBUG
+            char client_ip[
+                INET_ADDRSTRLEN
+            ];
+
+
+            const char *ip_result =
+                inet_ntop(
+                    AF_INET,
+                    &client_addr.sin_addr,
+                    client_ip,
+                    sizeof(client_ip)
+                );
+
+
+            if (ip_result != NULL) {
+
+                printf(
+                    "[CONN] Accepted %s connection "
+                    "from %s:%u "
+                    "(fd=%d slot=%zu)\n",
+                    adapter->name,
+                    client_ip,
+                    ntohs(
+                        client_addr.sin_port
+                    ),
+                    client_fd,
+                    slot
+                );
 
             } else {
 
-                /*
-                 * Find free connection slot.
-                 */
-                size_t slot;
-
-
-                for (
-                    slot = 0;
-                    slot < MAX_CONN;
-                    slot++
-                ) {
-
-                    if (
-                        connections[slot].fd ==
-                        -1
-                    ) {
-
-                        break;
-                    }
-                }
-
-
-                /*
-                 * No free slot.
-                 */
-                if (slot == MAX_CONN) {
-
-#ifdef DEBUG
-                    printf(
-                        "[CONN] Too many sensor connections\n"
-                    );
-#endif
-
-                    close(
-                        client_fd
-                    );
-
-                } else {
-
-                    connection_t *conn =
-                        &connections[slot];
-
-
-                    conn->fd =
-                        client_fd;
-
-                    conn->rx_len =
-                        0;
-
-                    conn->identified =
-                        false;
-
-                    conn->sensor_id =
-                        0;
-
-
-                    pfds[slot + 1].fd =
-                        client_fd;
-
-                    pfds[slot + 1].events =
-                        POLLIN;
-
-                    pfds[slot + 1].revents =
-                        0;
-
-
-#ifdef DEBUG
-                    char client_ip[
-                        INET_ADDRSTRLEN
-                    ];
-
-
-                    const char *ip_result =
-                        inet_ntop(
-                            AF_INET,
-                            &client_addr.sin_addr,
-                            client_ip,
-                            sizeof(client_ip)
-                        );
-
-
-                    if (ip_result != NULL) {
-
-                        printf(
-                            "[CONN] Accepted connection "
-                            "from %s:%u "
-                            "(fd=%d, slot=%zu)\n",
-                            client_ip,
-                            ntohs(
-                                client_addr.sin_port
-                            ),
-                            client_fd,
-                            slot
-                        );
-
-                    } else {
-
-                        printf(
-                            "[CONN] Accepted connection "
-                            "(fd=%d, slot=%zu)\n",
-                            client_fd,
-                            slot
-                        );
-                    }
-#endif
-                }
+                printf(
+                    "[CONN] Accepted %s connection "
+                    "(fd=%d slot=%zu)\n",
+                    adapter->name,
+                    client_fd,
+                    slot
+                );
             }
+#endif
         }
 
 
         /*
-         * =================================================
+         * ============================================
          * Existing sensor connections
-         * =================================================
+         * ============================================
          */
         for (
             size_t i = 0;
@@ -748,16 +1096,25 @@ void *connection_manager_thread(void *arg)
         ) {
 
             connection_t *conn =
-                &connections[i];
+                &manager->conns[i];
 
 
-            if (conn->fd == -1) {
+            if (
+                conn->fd ==
+                -1
+            ) {
+
                 continue;
             }
 
 
+            size_t poll_index =
+                PROTOCOL_COUNT +
+                i;
+
+
             struct pollfd *pfd =
-                &pfds[i + 1];
+                &pfds[poll_index];
 
 
             short revents =
@@ -770,35 +1127,35 @@ void *connection_manager_thread(void *arg)
 
 
             /*
-             * ---------------------------------------------
-             * Sensor has TCP bytes available
-             * ---------------------------------------------
+             * ----------------------------------------
+             * Incoming bytes
+             * ----------------------------------------
              */
-            if (revents & POLLIN) {
+            if (
+                revents &
+                POLLIN
+            ) {
 
                 size_t free_space =
                     RX_BUF_SIZE -
                     conn->rx_len;
 
 
-                /*
-                 * Buffer cannot accept more bytes.
-                 */
                 if (free_space == 0) {
 
-#ifdef DEBUG
-                    printf(
-                        "[CONN] RX buffer full "
-                        "(fd=%d, slot=%zu)\n",
-                        conn->fd,
-                        i
+                    logger_write(
+                        LOG_CONN,
+                        "Received malformed frame on %s port (bad length)",
+                        conn->adapter->name
                     );
-#endif
+
 
                     close_connection(
+                        manager,
                         conn,
                         pfd
                     );
+
 
                     continue;
                 }
@@ -814,33 +1171,29 @@ void *connection_manager_thread(void *arg)
                     );
 
 
-                /*
-                 * Peer closed connection.
-                 */
                 if (received == 0) {
 
 #ifdef DEBUG
                     printf(
-                        "[CONN] Sensor closed connection "
-                        "(fd=%d, slot=%zu)\n",
-                        conn->fd,
-                        i
+                        "[CONN] %s sensor closed "
+                        "(fd=%d)\n",
+                        conn->adapter->name,
+                        conn->fd
                     );
 #endif
 
 
                     close_connection(
+                        manager,
                         conn,
                         pfd
                     );
+
 
                     continue;
                 }
 
 
-                /*
-                 * recv() error.
-                 */
                 if (received < 0) {
 
                     if (errno == EINTR) {
@@ -848,74 +1201,57 @@ void *connection_manager_thread(void *arg)
                     }
 
 
-                    perror(
-                        "recv"
-                    );
-
-
                     close_connection(
+                        manager,
                         conn,
                         pfd
                     );
+
 
                     continue;
                 }
 
 
-                /*
-                 * Append new bytes to this
-                 * connection's private rx buffer.
-                 */
                 conn->rx_len +=
                     (size_t)received;
 
 
 #ifdef DEBUG
                 printf(
-                    "[CONN] Received %zd bytes "
-                    "(fd=%d, slot=%zu, buffered=%zu)\n",
+                    "[CONN] %s received %zd bytes "
+                    "(fd=%d buffered=%zu)\n",
+                    conn->adapter->name,
                     received,
                     conn->fd,
-                    i,
                     conn->rx_len
                 );
 #endif
 
 
-                /*
-                 * Decode every complete TBP frame.
-                 */
-                if (process_tbp_frames(
+                if (
+                    process_connection_buffer(
                         gateway,
                         conn
-                    ) != 0) {
+                    ) != 0
+                ) {
 
-                    if (!gateway_should_stop(
-                            gateway
-                        )) {
-
-                        fprintf(
-                            stderr,
-                            "[CONN] Invalid or failed TBP processing "
-                            "(fd=%d, slot=%zu)\n",
-                            conn->fd,
-                            i
-                        );
-                    }
-
-
-                    // Protocol failure: discard this connection.
                     close_connection(
+                        manager,
                         conn,
                         pfd
                     );
+
 
                     continue;
                 }
             }
 
 
-            // Hangup / socket error
+            /*
+             * ----------------------------------------
+             * Socket error / hangup
+             * ----------------------------------------
+             */
             if (
                 conn->fd != -1 &&
                 (
@@ -925,17 +1261,8 @@ void *connection_manager_thread(void *arg)
                 )
             ) {
 
-#ifdef DEBUG
-                printf(
-                    "[CONN] Sensor disconnected "
-                    "(fd=%d, slot=%zu)\n",
-                    conn->fd,
-                    i
-                );
-#endif
-
-
                 close_connection(
+                    manager,
                     conn,
                     pfd
                 );
@@ -943,7 +1270,12 @@ void *connection_manager_thread(void *arg)
         }
     }
 
-    // Gateway shutdown
+
+    /*
+     * ------------------------------------------------
+     * Shutdown connections
+     * ------------------------------------------------
+     */
     for (
         size_t i = 0;
         i < MAX_CONN;
@@ -951,21 +1283,44 @@ void *connection_manager_thread(void *arg)
     ) {
 
         if (
-            connections[i].fd !=
+            manager->conns[i].fd !=
             -1
         ) {
 
             close_connection(
-                &connections[i],
-                &pfds[i + 1]
+                manager,
+                &manager->conns[i],
+                &pfds[
+                    PROTOCOL_COUNT +
+                    i
+                ]
             );
         }
     }
 
 
-    close(
-        listen_fd
-    );
+    /*
+     * Shutdown listening sockets.
+     */
+    for (
+        size_t i = 0;
+        i < PROTOCOL_COUNT;
+        i++
+    ) {
+
+        if (
+            manager->listen_fd[i] !=
+            -1
+        ) {
+
+            close(
+                manager->listen_fd[i]
+            );
+
+            manager->listen_fd[i] =
+                -1;
+        }
+    }
 
 
 #ifdef DEBUG

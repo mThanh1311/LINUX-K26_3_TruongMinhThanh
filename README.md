@@ -664,4 +664,5 @@ These features are intentionally separated from the current midterm submission.
 ## 17. Author
 
 **Student:** Truong Minh Thanh 
+
 **Project:** Sensor Gateway

@@ -1,17 +1,15 @@
 # Build artifacts
 build/
 *.o
-*.out
 *.a
 *.so
+*.out
 
 # Runtime artifacts
-runtime/*.db
-runtime/*.db-shm
-runtime/*.db-wal
-runtime/*.log
-runtime/logFifo
-
+runtime/
+*.log
+*.db
+logFifo
 
 # Executables
 server
@@ -23,14 +21,29 @@ vgcore.*
 core
 core.*
 
-# Editor / OS files
-.vscode/
-.DS_Store
-
 # Temporary files
 *.tmp
 *.swp
+*.swo
 *~
 
-/gateway.log
-/logFifo
+# IDE / Editor
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Secrets / credentials
+.env
+.env.*
+*.key
+*.pem
+*.crt
+credentials*
+secrets*

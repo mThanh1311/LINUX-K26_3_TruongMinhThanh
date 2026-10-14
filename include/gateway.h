@@ -4,6 +4,7 @@
 #include <pthread.h>
 #include <signal.h>
 #include <stdint.h>
+#include <stdbool.h>
 #include <sys/types.h>
 
 #include "connection_manager.h"
@@ -33,6 +34,10 @@ typedef struct {
     datamgr_t data;
 
     storagemgr_t storage;
+
+    bool conn_thread_started;
+    bool data_thread_started;
+    bool storage_thread_started;
 
 } gateway_t;
 

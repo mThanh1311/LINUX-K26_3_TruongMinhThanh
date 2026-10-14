@@ -74,7 +74,8 @@ OBJ := \
 	run \
 	clean \
 	test \
-	test-protocols
+	test-protocols \
+	stress
 
 # Default build
 all: \
@@ -125,11 +126,11 @@ $(TEST_PROTOCOLS_TARGET): \
 test-protocols: $(TEST_PROTOCOLS_TARGET)
 	./$(TEST_PROTOCOLS_TARGET)
 
+stress:
+	$(MAKE) debug
+	bash test/stress.sh
 
-# ============================================================
 # Debug build
-# ============================================================
-
 debug: CFLAGS += $(DEBUG_FLAGS)
 debug: clean all
 

@@ -47,9 +47,12 @@ int gateway_init(
 
 int gateway_start(gateway_t *gateway)
 {
-    int ret;
+    if (gateway == NULL) {
+        return -1;
+    }
 
-    ret = pthread_create(
+
+    int ret = pthread_create(
         &gateway->conn_thread,
         NULL,
         connection_manager_thread,
@@ -57,9 +60,16 @@ int gateway_start(gateway_t *gateway)
     );
 
     if (ret != 0) {
-        fprintf(stderr, "Failed to create Connection Manager thread\n");
+        fprintf(
+            stderr,
+            "Failed to create Connection Manager thread\n"
+        );
+
         return -1;
     }
+
+    gateway->conn_thread_started = true;
+
 
     ret = pthread_create(
         &gateway->data_thread,
@@ -69,9 +79,16 @@ int gateway_start(gateway_t *gateway)
     );
 
     if (ret != 0) {
-        fprintf(stderr, "Failed to create Data Manager thread\n");
-        return -1;
+        fprintf(
+            stderr,
+            "Failed to create Data Manager thread\n"
+        );
+
+        goto fail;
     }
+
+    gateway->data_thread_started = true;
+
 
     ret = pthread_create(
         &gateway->storage_thread,
@@ -81,11 +98,32 @@ int gateway_start(gateway_t *gateway)
     );
 
     if (ret != 0) {
-        fprintf(stderr, "Failed to create Storage Manager thread\n");
-        return -1;
+        fprintf(
+            stderr,
+            "Failed to create Storage Manager thread\n"
+        );
+
+        goto fail;
     }
 
+    gateway->storage_thread_started = true;
+
     return 0;
+
+
+fail:
+
+    gateway_request_stop(gateway);
+
+    // Wake Data / Storage threads if one of them has already entered sbuffer wait.
+    
+    sbuffer_shutdown(
+        &gateway->sbuf
+    );
+
+    gateway_join(gateway);
+
+    return -1;
 }
 
 int gateway_should_stop(gateway_t *gateway)
@@ -120,9 +158,38 @@ void gateway_join(gateway_t *gateway)
         return;
     }
 
-    pthread_join(gateway->conn_thread, NULL);
-    pthread_join(gateway->data_thread, NULL);
-    pthread_join(gateway->storage_thread, NULL);
+
+    if (gateway->conn_thread_started) {
+
+        pthread_join(
+            gateway->conn_thread,
+            NULL
+        );
+
+        gateway->conn_thread_started = false;
+    }
+
+
+    if (gateway->data_thread_started) {
+
+        pthread_join(
+            gateway->data_thread,
+            NULL
+        );
+
+        gateway->data_thread_started = false;
+    }
+
+
+    if (gateway->storage_thread_started) {
+
+        pthread_join(
+            gateway->storage_thread,
+            NULL
+        );
+
+        gateway->storage_thread_started = false;
+    }
 }
 
 void gateway_destroy(gateway_t *gateway)

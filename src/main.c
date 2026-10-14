@@ -313,19 +313,22 @@ int main(
         );
 
 
-        /*
-         * Logger process has already started,
-         * so shut it down before destroying gateway.
-         */
-        logger_shutdown(
-            gateway.log_pid
-        );
+        if (
+            logger_shutdown(
+                gateway.log_pid
+            ) != 0
+        ) {
+
+            fprintf(
+                stderr,
+                "Failed to shutdown logger cleanly\n"
+            );
+        }
 
 
         gateway_destroy(
             &gateway
         );
-
 
         return EXIT_FAILURE;
     }
@@ -454,7 +457,7 @@ int main(
             "[MAIN] Internal shutdown requested\n"
         );
     }
-#endif
+#endif  
 
     if (g_signal_received) {
 

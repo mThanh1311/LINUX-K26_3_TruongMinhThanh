@@ -406,3 +406,103 @@ void sbuffer_destroy(sbuffer_t *buffer)
         &buffer->lock
     );
 }
+
+int sbuffer_peek_storage(
+    sbuffer_t *buffer,
+    sensor_data_t *data
+)
+{
+    if (buffer == NULL ||
+        data == NULL) {
+        return -1;
+    }
+
+    if (pthread_mutex_lock(
+            &buffer->lock
+        ) != 0) {
+
+        return -1;
+    }
+
+    for (;;) {
+
+        sbuffer_node_t *node =
+            find_unread_node(
+                buffer,
+                SBUFFER_READER_STORAGE
+            );
+
+        if (node != NULL) {
+
+            *data = node->data;
+
+            pthread_mutex_unlock(
+                &buffer->lock
+            );
+
+            return 0;
+        }
+
+        if (buffer->shutdown) {
+
+            pthread_mutex_unlock(
+                &buffer->lock
+            );
+
+            return 1;
+        }
+
+        if (pthread_cond_wait(
+                &buffer->not_empty,
+                &buffer->lock
+            ) != 0) {
+
+            pthread_mutex_unlock(
+                &buffer->lock
+            );
+
+            return -1;
+        }
+    }
+}
+
+int sbuffer_commit_storage(
+    sbuffer_t *buffer
+)
+{
+    if (buffer == NULL) {
+        return -1;
+    }
+
+    if (pthread_mutex_lock(
+            &buffer->lock
+        ) != 0) {
+
+        return -1;
+    }
+
+    sbuffer_node_t *node =
+        find_unread_node(
+            buffer,
+            SBUFFER_READER_STORAGE
+        );
+
+    if (node == NULL) {
+
+        pthread_mutex_unlock(
+            &buffer->lock
+        );
+
+        return -1;
+    }
+
+    node->read_by_storage = true;
+
+    remove_consumed_nodes(buffer);
+
+    pthread_mutex_unlock(
+        &buffer->lock
+    );
+
+    return 0;
+}

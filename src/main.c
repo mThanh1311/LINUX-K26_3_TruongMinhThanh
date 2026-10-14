@@ -431,11 +431,12 @@ int main(
      *
      * Main thread waits until SIGINT or SIGTERM.
      */
-    while (!g_signal_received) {
-
+    while (
+        !g_signal_received &&
+        !gateway_should_stop(&gateway)
+    ) {
         sleep(1);
     }
-
 
     /*
      * --------------------------------------------------
@@ -444,16 +445,31 @@ int main(
      */
 
 #ifdef DEBUG
-    printf(
-        "[MAIN] Shutdown requested\n"
-    );
+    if (g_signal_received) {
+        printf(
+            "[MAIN] Shutdown requested by signal\n"
+        );
+    } else {
+        printf(
+            "[MAIN] Internal shutdown requested\n"
+        );
+    }
 #endif
 
+    if (g_signal_received) {
 
-    logger_write(
-        LOG_MAIN,
-        "Gateway shutting down (signal)"
-    );
+        logger_write(
+            LOG_MAIN,
+            "Gateway shutting down (signal)"
+        );
+
+    } else {
+
+        logger_write(
+            LOG_MAIN,
+            "Gateway shutting down (internal request)"
+        );
+    }
 
 
     /*

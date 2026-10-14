@@ -7,6 +7,8 @@
 #include <sys/types.h>
 
 #include "connection_manager.h"
+#include "storage_manager.h"
+#include "data_manager.h"
 #include "sbuffer.h"
 
 
@@ -26,11 +28,11 @@ typedef struct {
 
     sbuffer_t sbuf;
 
-    /*
-     * Step 4:
-     * Connection Manager state.
-     */
     connmgr_t conn;
+
+    datamgr_t data;
+
+    storagemgr_t storage;
 
 } gateway_t;
 
@@ -41,25 +43,14 @@ int gateway_init(
     uint16_t http_port
 );
 
-int gateway_start(
-    gateway_t *gateway
-);
+int gateway_start(gateway_t *gateway);
 
-int gateway_should_stop(
-    gateway_t *gateway
-);
+int gateway_should_stop(gateway_t *gateway);
 
-void gateway_request_stop(
-    gateway_t *gateway
-);
+void gateway_request_stop(gateway_t *gateway);
 
-void gateway_join(
-    gateway_t *gateway
-);
+void gateway_join(gateway_t *gateway);
 
-void gateway_destroy(
-    gateway_t *gateway
-);
-
+void gateway_destroy(gateway_t *gateway);
 
 #endif

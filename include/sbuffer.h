@@ -33,6 +33,15 @@ typedef struct {
     pthread_cond_t not_empty;
 } sbuffer_t;
 
+int sbuffer_peek_storage(
+    sbuffer_t *buffer,
+    sensor_data_t *data
+);
+
+int sbuffer_commit_storage(
+    sbuffer_t *buffer
+);
+
 
 int sbuffer_init(sbuffer_t *buffer);
 

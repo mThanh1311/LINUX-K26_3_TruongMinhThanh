@@ -278,17 +278,192 @@ echo
 
 
 if [ "$FAIL" -eq 0 ]; then
-
     echo "================================"
     echo "M4 FUNCTIONAL TEST: PASS"
     echo "================================"
+else
+    echo "================================"
+    echo "M4 FUNCTIONAL TEST: FAIL"
+    echo "================================"
 
-    exit 0
+    exit 1
 fi
 
 
+echo
 echo "================================"
-echo "M4 FUNCTIONAL TEST: FAIL"
+echo "M5 DATA MANAGER TEST"
 echo "================================"
 
-exit 1
+rm -f gateway.log
+rm -f runtime/m5_server.log
+
+stdbuf -oL -eL \
+    ./build/bin/server \
+    1234 8080 \
+    > runtime/m5_server.log 2>&1 &
+
+M5_SERVER_PID=$!
+
+sleep 1
+
+
+if ! kill -0 "$M5_SERVER_PID" 2>/dev/null; then
+    echo "[FAIL] M5 server failed to start"
+    cat runtime/m5_server.log
+    exit 1
+fi
+
+
+if ! python3 test/test.py; then
+    echo "[FAIL] M5 traffic generator failed"
+
+    kill -INT "$M5_SERVER_PID" 2>/dev/null || true
+    wait "$M5_SERVER_PID" 2>/dev/null || true
+
+    exit 1
+fi
+
+sleep 1
+
+
+kill -INT "$M5_SERVER_PID"
+wait "$M5_SERVER_PID"
+
+
+FAIL=0
+
+
+check_count()
+{
+    local description="$1"
+    local pattern="$2"
+    local expected="$3"
+
+    local actual
+
+    actual=$(
+        grep -c "$pattern" gateway.log || true
+    )
+
+    printf "%-35s expected=%-3s actual=%-3s " \
+        "$description" \
+        "$expected" \
+        "$actual"
+
+    if [ "$actual" -eq "$expected" ]; then
+        echo "PASS"
+    else
+        echo "FAIL"
+        FAIL=1
+    fi
+}
+
+
+echo
+echo "=== Temperature ==="
+
+check_count \
+    "Temperature COLD" \
+    "sensor node with 10 reports it's too cold" \
+    1
+
+check_count \
+    "Temperature HOT" \
+    "sensor node with 10 reports it's too hot" \
+    1
+
+
+echo
+echo "=== Humidity ==="
+
+check_count \
+    "Humidity DRY" \
+    "sensor node with 21 reports it's too dry" \
+    1
+
+check_count \
+    "Humidity HUMID" \
+    "sensor node with 21 reports it's too humid" \
+    1
+
+
+echo
+echo "=== Motion ==="
+
+check_count \
+    "Motion events" \
+    "sensor node with 30 detected motion" \
+    3
+
+
+echo
+echo "=== Door ==="
+
+check_count \
+    "Door OPEN transitions" \
+    "sensor node with 40 reports the door is open" \
+    2
+
+check_count \
+    "Door CLOSED transitions" \
+    "sensor node with 40 reports the door is closed" \
+    1
+
+
+echo
+echo "=== Smoke/Gas ==="
+
+check_count \
+    "Smoke/Gas alarms" \
+    "sensor node with 50 reports a smoke/gas alarm" \
+    2
+
+
+echo
+echo "=== Validation ==="
+
+check_count \
+    "Unknown sensor ID" \
+    "invalid sensor node ID 999" \
+    1
+
+check_count \
+    "Type mismatch" \
+    "invalid sensor node ID 21" \
+    1
+
+
+echo
+echo "=== Shutdown ==="
+
+if grep -q \
+    "Gateway stopped cleanly" \
+    runtime/m5_server.log; then
+
+    echo "Clean shutdown: PASS"
+
+else
+
+    echo "Clean shutdown: FAIL"
+    FAIL=1
+fi
+
+
+echo
+
+
+if [ "$FAIL" -eq 0 ]; then
+
+    echo "================================"
+    echo "M5 FUNCTIONAL TEST: PASS"
+    echo "================================"
+
+else
+
+    echo "================================"
+    echo "M5 FUNCTIONAL TEST: FAIL"
+    echo "================================"
+
+    exit 1
+fi
